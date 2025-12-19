@@ -13,13 +13,12 @@ This repo produces an installable zip in `dist/`.
 
 - **Blender**: 4.2+ (tested with Blender 4.5.x LTS)
 - **OS**: Linux x64
-- **Python ABI**: Blender’s bundled Python **3.11** (the shipped binaries/wheels are `cp311`)
 
 ## Runtime Requirements
 
 ### Minimal (Ando CPU backend)
 - Blender 4.2+ on Linux x64
-- No separate Python install required (Blender ships Python)
+
 
 ### PPF GPU backend (additional requirements)
 - NVIDIA GPU (PPF runs on GPU)

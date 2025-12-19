@@ -1,4 +1,4 @@
-# AndoSim ArteZbuild 0.0.08 — Known Issues & FAQ
+# AndoSim ArteZbuild 0.0.8 — Known Issues & FAQ
 
 This document tracks common problems and practical workarounds for the unified AndoSim (CPU) + PPF (GPU) Blender Extension.
 
@@ -82,7 +82,7 @@ This document tracks common problems and practical workarounds for the unified A
 
 **Fix**
 - Install from the built zip:
-  - Blender → Preferences → Extensions → Install from Disk… → select `dist/andosim_artezbuild-0.0.08.zip`.
+  - Blender → Preferences → Extensions → Install from Disk… → select `dist/andosim_artezbuild-0.0.8.zip`.
 
 ---
 

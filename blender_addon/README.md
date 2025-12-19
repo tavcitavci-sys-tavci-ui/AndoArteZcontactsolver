@@ -12,7 +12,7 @@ It bundles two simulation backends:
    - `./build.sh`
 2. Install in Blender:
    - Edit → Preferences → Extensions → Install from Disk…
-   - Select `dist/andosim_artezbuild-0.0.08.zip`
+  - Select `dist/andosim_artezbuild-0.0.8.zip`
    - Enable the extension
 
 ## Supported Platforms

@@ -1,14 +1,14 @@
 # AndoSim ArteZbuild — Install & Quick Start (ZIP)
 
 This guide assumes you already have the extension zip:
-- `andosim_artezbuild-0.0.08.zip`
+- `andosim_artezbuild-0.0.8.zip`
 
 ## Install
 
 1. Open Blender (4.2+).
 2. Go to **Edit → Preferences → Extensions**.
 3. Click **Install from Disk…**
-4. Select `andosim_artezbuild-0.0.08.zip`.
+4. Select `andosim_artezbuild-0.0.8.zip`.
 5. After it installs, **enable** the extension (toggle on).
 
 If you updated the zip and Blender still behaves like an older version:

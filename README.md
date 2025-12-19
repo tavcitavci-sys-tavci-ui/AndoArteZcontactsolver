@@ -11,7 +11,7 @@ This repo produces an installable zip in `dist/`.
 
 ## Downloads
 
-- **Latest (0.0.08)**: `dist/andosim_artezbuild-latest.zip`
+- **Latest (0.0.8)**: `dist/andosim_artezbuild-latest.zip`
 - Versioned zips are also kept in `dist/`.
 
 ## Supported Versions
@@ -35,8 +35,8 @@ Notes:
 ## Install (Recommended)
 
 1. Build (or download) the extension zip:
-   - Latest: `dist/andosim_artezbuild-latest.zip` (currently 0.0.08)
-   - Versioned: `dist/andosim_artezbuild-0.0.08.zip`
+   - Latest: `dist/andosim_artezbuild-latest.zip` (currently 0.0.8)
+   - Versioned: `dist/andosim_artezbuild-0.0.8.zip`
 2. In Blender:
    - **Edit → Preferences → Extensions → Install from Disk…**
    - Select `dist/andosim_artezbuild-latest.zip` (or a versioned zip)

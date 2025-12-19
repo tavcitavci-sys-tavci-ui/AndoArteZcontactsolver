@@ -1,0 +1,5 @@
+# Ignore local build artifacts
+.venv/
+ppf_cts_backend/target/
+__pycache__/
+*.pyc

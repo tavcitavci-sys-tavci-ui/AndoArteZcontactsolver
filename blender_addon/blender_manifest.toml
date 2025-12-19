@@ -1,0 +1,13 @@
+schema_version = "1.0.0"
+id = "artezbuild_ppf"
+version = "0.0.6"
+name = "Artezbuild PPF (In-Process)"
+tagline = "In-process PPF GPU backend integration"
+maintainer = "Moritz"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["MIT"]
+
+wheels = [
+	"./wheels/ppf_cts_backend-0.0.1-cp311-cp311-manylinux_2_34_x86_64.whl",
+]

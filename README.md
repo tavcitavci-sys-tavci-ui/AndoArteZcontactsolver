@@ -131,6 +131,8 @@ If you need to rebuild it locally, you’ll need:
 
 This repo vendors the wheel wrapper source in `ppf_cts_backend/`.
 
+It also vendors the required `ppf-contact-solver/` Rust/CUDA source tree used by the wheel.
+
 Build and copy the wheel into the extension:
 - `tools/build_ppf_wheel.sh`
 

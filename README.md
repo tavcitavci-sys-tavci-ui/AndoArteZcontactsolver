@@ -9,6 +9,11 @@ A unified Blender 4.2+ **Extension** that bundles two simulation backends under 
 
 This repo produces an installable zip in `dist/`.
 
+## Downloads
+
+- **Latest (0.0.08)**: `dist/andosim_artezbuild-latest.zip`
+- Versioned zips are also kept in `dist/`.
+
 ## Supported Versions
 
 - **Blender**: 4.2+ (tested with Blender 4.5.x LTS)
@@ -30,10 +35,11 @@ Notes:
 ## Install (Recommended)
 
 1. Build (or download) the extension zip:
-   - This repo builds: `dist/andosim_artezbuild-0.0.08.zip`
+   - Latest: `dist/andosim_artezbuild-latest.zip` (currently 0.0.08)
+   - Versioned: `dist/andosim_artezbuild-0.0.08.zip`
 2. In Blender:
    - **Edit → Preferences → Extensions → Install from Disk…**
-   - Select `dist/andosim_artezbuild-0.0.08.zip`
+   - Select `dist/andosim_artezbuild-latest.zip` (or a versioned zip)
    - Enable the extension.
 3. Verify it loaded:
    - Open the 3D Viewport sidebar: **View3D → Sidebar → AndoSim**

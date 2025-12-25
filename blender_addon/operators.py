@@ -25,6 +25,83 @@ _PPF_BACKEND_FILE: str = "?"
 _PPF_BACKEND_VERSION_PRINTED: bool = False
 
 
+def _ppf_scene_counts(scene_path: str) -> dict[str, int] | None:
+    """Read solver vertex counts from the exported scene's info.toml.
+
+    This lets us validate buffer sizes before calling into native code.
+    """
+
+    try:
+        info_path = os.path.join(str(scene_path), "info.toml")
+        if not os.path.exists(info_path):
+            return None
+
+        # Prefer tomllib in Python 3.11+ (Blender 4.x).
+        try:
+            import tomllib  # type: ignore
+
+            with open(info_path, "rb") as f:
+                data = tomllib.load(f)
+            counts = data.get("count", {}) if isinstance(data, dict) else {}
+            out: dict[str, int] = {}
+            for k in ("vert", "static_vert"):
+                try:
+                    if k in counts:
+                        out[k] = int(counts[k])
+                except Exception:
+                    pass
+            return out or None
+        except Exception:
+            pass
+
+        # Fallback: tiny parser (avoid extra deps).
+        out: dict[str, int] = {}
+        in_count = False
+        with open(info_path, "r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("[") and line.endswith("]"):
+                    in_count = (line == "[count]")
+                    continue
+                if not in_count:
+                    continue
+                if "=" not in line:
+                    continue
+                k, v = [p.strip() for p in line.split("=", 1)]
+                if k in ("vert", "static_vert"):
+                    try:
+                        out[k] = int(v)
+                    except Exception:
+                        pass
+        return out or None
+    except Exception:
+        return None
+
+
+def _ppf_finite_floats(values, label: str) -> None:
+    for i, v in enumerate(values):
+        if not math.isfinite(float(v)):
+            raise RuntimeError(f"Non-finite {label}[{i}]={v}")
+
+
+def _ppf_as_f32(values, *, label: str) -> array:
+    """Convert a float sequence to a contiguous float32 array with validation."""
+    _ppf_finite_floats(values, label)
+    try:
+        return array("f", (float(x) for x in values))
+    except Exception as exc:
+        raise RuntimeError(f"Failed to build float32 buffer for {label}: {exc}")
+
+
+def _ppf_as_u64(values, *, label: str) -> array:
+    try:
+        return array("Q", (int(x) for x in values))
+    except Exception as exc:
+        raise RuntimeError(f"Failed to build u64 buffer for {label}: {exc}")
+
+
 # In-memory mesh snapshot used by "Reset Simulation".
 # Keyed by mesh datablock pointer so renames are less fragile.
 _PPF_MESH_SNAPSHOT: dict[int, dict] = {}
@@ -933,7 +1010,9 @@ def _get_settings(context):
 
 def _try_import_backend():
     try:
-        import ppf_cts_backend  # type: ignore
+        from . import backend_loader
+
+        ppf_cts_backend = backend_loader.import_backend()
 
         global _PPF_BACKEND_VERSION, _PPF_BACKEND_FILE, _PPF_BACKEND_VERSION_PRINTED
         _PPF_BACKEND_VERSION = str(getattr(ppf_cts_backend, "__version__", "?"))
@@ -947,19 +1026,6 @@ def _try_import_backend():
 
         return ppf_cts_backend
     except Exception as exc:
-        try:
-            import sys
-
-            py = sys.version_info
-            py_tag = f"cp{py.major}{py.minor}"
-            if (py.major, py.minor) != (3, 11):
-                return RuntimeError(
-                    f"{exc} (Blender Python is {py.major}.{py.minor} / {py_tag}; "
-                    "this extension bundles a cp311 wheel. Build/bundle a matching wheel "
-                    "for your Blender Python, or use a Blender build with Python 3.11.)"
-                )
-        except Exception:
-            pass
         return exc
 
 
@@ -972,6 +1038,8 @@ class _PPFState:
         # list[(global_vidx, target_obj_name, (i0,i1,i2), (w0,w1,w2))]
         self.attach_bindings = []
         self.collider_object_names = []  # stable export order for collision mesh updates
+        self.expected_verts = None
+        self.expected_static_verts = None
 
 
 def _barycentric_coords(
@@ -1171,7 +1239,13 @@ def _ppf_apply_pin_targets(session, indices: list[int], positions_flat: list[flo
 
     try:
         if indices:
-            set_fn(indices, positions_flat)
+            if len(positions_flat) != 3 * len(indices):
+                raise RuntimeError(
+                    f"Pin payload mismatch: {len(indices)} indices but {len(positions_flat)} position floats"
+                )
+            idx_buf = _ppf_as_u64(indices, label="pin_indices")
+            pos_buf = _ppf_as_f32(positions_flat, label="pin_positions")
+            set_fn(idx_buf, pos_buf)
         else:
             clear_fn = getattr(session, "clear_pin_targets", None)
             if clear_fn is not None:
@@ -1181,8 +1255,31 @@ def _ppf_apply_pin_targets(session, indices: list[int], positions_flat: list[flo
         return False
 
 
-def _sync_ppf_pin_targets_to_backend(context, session, objs: list[tuple[bpy.types.Object, int, int]], attach_bindings) -> bool:
+def _sync_ppf_pin_targets_to_backend(
+    context,
+    session,
+    objs: list[tuple[bpy.types.Object, int, int]],
+    attach_bindings,
+    *,
+    expected_verts: int | None = None,
+) -> bool:
     indices, positions_flat = _ppf_build_pin_targets(context, objs, attach_bindings)
+    if expected_verts is not None:
+        # Clamp invalid indices early to avoid native crashes.
+        filtered_idx: list[int] = []
+        filtered_pos: list[float] = []
+        for k, idx in enumerate(indices):
+            if 0 <= int(idx) < int(expected_verts):
+                filtered_idx.append(int(idx))
+                base = 3 * int(k)
+                filtered_pos.extend(
+                    [
+                        float(positions_flat[base + 0]),
+                        float(positions_flat[base + 1]),
+                        float(positions_flat[base + 2]),
+                    ]
+                )
+        indices, positions_flat = filtered_idx, filtered_pos
     return _ppf_apply_pin_targets(session, indices, positions_flat)
 
 
@@ -1232,13 +1329,20 @@ def _ppf_apply_collision_mesh_vertices(session, verts_flat: list[float] | None) 
     if set_fn is None:
         return False
     try:
-        set_fn(verts_flat)
+        vbuf = _ppf_as_f32(verts_flat, label="collision_vertices")
+        set_fn(vbuf)
         return True
     except Exception:
         return False
 
 
-def _sync_ppf_collision_mesh_to_backend(context, session, collider_object_names: list[str]) -> bool:
+def _sync_ppf_collision_mesh_to_backend(
+    context,
+    session,
+    collider_object_names: list[str],
+    *,
+    expected_static_verts: int | None = None,
+) -> bool:
     """If the backend supports it, push animated/static-collider mesh vertices each tick.
 
     The solver scene is exported with static colliders concatenated into a single collision mesh.
@@ -1247,6 +1351,18 @@ def _sync_ppf_collision_mesh_to_backend(context, session, collider_object_names:
     """
 
     verts_flat = _ppf_build_collision_mesh_vertices_flat(context, list(collider_object_names or []))
+    if expected_static_verts is not None and verts_flat is not None:
+        if len(verts_flat) != 3 * int(expected_static_verts):
+            # Mismatch usually means topology-modifying modifiers are active on a collider.
+            # Skip the update to avoid native out-of-bounds access.
+            try:
+                print(
+                    f"[PPF] Skipping collider mesh update: got {len(verts_flat)//3} verts, "
+                    f"expected {int(expected_static_verts)}"
+                )
+            except Exception:
+                pass
+            return False
     return _ppf_apply_collision_mesh_vertices(session, verts_flat)
 
 
@@ -1311,6 +1427,17 @@ class ANDOSIM_ARTEZBUILD_OT_ppf_run(bpy.types.Operator):
             if not scene_path:
                 self.report({"ERROR"}, "No PPF scene path")
                 return {"CANCELLED"}
+
+            counts = _ppf_scene_counts(scene_path)
+            if counts is not None:
+                try:
+                    state.expected_verts = int(counts.get("vert")) if "vert" in counts else None
+                except Exception:
+                    state.expected_verts = None
+                try:
+                    state.expected_static_verts = int(counts.get("static_vert")) if "static_vert" in counts else None
+                except Exception:
+                    state.expected_static_verts = None
 
             if not state.deformable_slices:
                 obj = settings.target_object or context.active_object
@@ -1401,11 +1528,27 @@ class ANDOSIM_ARTEZBUILD_OT_ppf_run(bpy.types.Operator):
             total_verts = max(total_verts, int(start) + int(count))
 
         # Push handle + attach pin targets (if any) into the backend.
-        _sync_ppf_pin_targets_to_backend(context, state.session, objs, getattr(state, "attach_bindings", []) or [])
-        _sync_ppf_collision_mesh_to_backend(context, state.session, list(getattr(state, "collider_object_names", []) or []))
+        _sync_ppf_pin_targets_to_backend(
+            context,
+            state.session,
+            objs,
+            getattr(state, "attach_bindings", []) or [],
+            expected_verts=(getattr(state, "expected_verts", None) or int(total_verts)),
+        )
+        _sync_ppf_collision_mesh_to_backend(
+            context,
+            state.session,
+            list(getattr(state, "collider_object_names", []) or []),
+            expected_static_verts=getattr(state, "expected_static_verts", None),
+        )
 
         try:
-            curr = [0.0] * (total_verts * 3)
+            if getattr(state, "expected_verts", None) is not None and int(total_verts) != int(state.expected_verts):
+                raise RuntimeError(
+                    f"Vertex count mismatch: deformables have {total_verts} verts, scene expects {int(state.expected_verts)}"
+                )
+
+            curr = array("f", [0.0]) * (total_verts * 3)
             for obj, start, count in objs:
                 mw = obj.matrix_world
                 mesh = obj.data
@@ -1416,6 +1559,8 @@ class ANDOSIM_ARTEZBUILD_OT_ppf_run(bpy.types.Operator):
                     curr[3 * j + 0] = sx
                     curr[3 * j + 1] = sy
                     curr[3 * j + 2] = sz
+
+            _ppf_finite_floats(curr, "curr")
 
             out = state.session.step(curr)
             if len(out) != len(curr):
@@ -1439,7 +1584,13 @@ class ANDOSIM_ARTEZBUILD_OT_ppf_run(bpy.types.Operator):
                 obj.update_tag()
 
             # Ensure we clear targets when nothing drives pins.
-            _sync_ppf_pin_targets_to_backend(context, state.session, objs, getattr(state, "attach_bindings", []) or [])
+            _sync_ppf_pin_targets_to_backend(
+                context,
+                state.session,
+                objs,
+                getattr(state, "attach_bindings", []) or [],
+                expected_verts=getattr(state, "expected_verts", None),
+            )
         except Exception as exc:
             details = _ppf_failure_details(getattr(_get_settings(context), "output_dir", ""))
             self.report({"ERROR"}, f"PPF step failed: {exc}. {details}")
@@ -1994,7 +2145,9 @@ class _PPFBakeState:
 
         self.writers: list[tuple[bpy.types.Object, int, int, _PC2Writer, Path]] = []
         self.total_verts = 0
-        self.curr: list[float] | None = None
+        self.curr = None
+        self.expected_verts = None
+        self.expected_static_verts = None
 
         # PPF per-frame stepping
         self.dt = 0.0
@@ -2107,6 +2260,17 @@ class ANDOSIM_ARTEZBUILD_OT_ppf_bake_cache(bpy.types.Operator):
             for w in getattr(export, "warnings", []) or []:
                 self.report({"WARNING"}, str(w))
 
+            counts = _ppf_scene_counts(export.scene_path)
+            if counts is not None:
+                try:
+                    state.expected_verts = int(counts.get("vert")) if "vert" in counts else None
+                except Exception:
+                    state.expected_verts = None
+                try:
+                    state.expected_static_verts = int(counts.get("static_vert")) if "static_vert" in counts else None
+                except Exception:
+                    state.expected_static_verts = None
+
             slices = list(getattr(export, "deformable_slices", []) or [])
             if not slices:
                 self.report({"ERROR"}, "No deformables enabled for PPF (tag objects as Deformable)")
@@ -2163,7 +2327,12 @@ class ANDOSIM_ARTEZBUILD_OT_ppf_bake_cache(bpy.types.Operator):
             for _obj, start, count, _writer, _pc2_path in state.writers:
                 state.total_verts = max(int(state.total_verts), int(start) + int(count))
 
-            state.curr = [0.0] * (int(state.total_verts) * 3)
+            if getattr(state, "expected_verts", None) is not None and int(state.total_verts) != int(state.expected_verts):
+                raise RuntimeError(
+                    f"Vertex count mismatch: deformables have {int(state.total_verts)} verts, scene expects {int(state.expected_verts)}"
+                )
+
+            state.curr = array("f", [0.0]) * (int(state.total_verts) * 3)
             for obj, start, _count, _writer, _pc2_path in state.writers:
                 mw = obj.matrix_world
                 mesh = obj.data
@@ -2174,6 +2343,8 @@ class ANDOSIM_ARTEZBUILD_OT_ppf_bake_cache(bpy.types.Operator):
                     state.curr[3 * j + 0] = sx
                     state.curr[3 * j + 1] = sy
                     state.curr[3 * j + 2] = sz
+
+            _ppf_finite_floats(state.curr, "bake_curr_init")
 
             # Sample 0: current local coords at frame_start.
             for obj, _start, count, writer, _pc2_path in state.writers:
@@ -2249,6 +2420,53 @@ class ANDOSIM_ARTEZBUILD_OT_ppf_bake_cache(bpy.types.Operator):
             collider_names = list(getattr(state, "collider_object_names", []) or [])
             collider_verts_flat = _ppf_build_collision_mesh_vertices_flat(context, collider_names)
 
+            # Validate/convert payloads once per Blender frame (then reuse per substep).
+            exp_verts = getattr(state, "expected_verts", None)
+            if exp_verts is None:
+                try:
+                    exp_verts = int(getattr(state, "total_verts", 0) or 0)
+                except Exception:
+                    exp_verts = None
+            if exp_verts is not None:
+                filtered_idx: list[int] = []
+                filtered_pos: list[float] = []
+                for k, idx in enumerate(pin_indices):
+                    if 0 <= int(idx) < int(exp_verts):
+                        filtered_idx.append(int(idx))
+                        base = 3 * int(k)
+                        filtered_pos.extend(
+                            [
+                                float(pin_positions_flat[base + 0]),
+                                float(pin_positions_flat[base + 1]),
+                                float(pin_positions_flat[base + 2]),
+                            ]
+                        )
+                pin_indices, pin_positions_flat = filtered_idx, filtered_pos
+
+            pin_idx_buf = None
+            pin_pos_buf = None
+            if pin_indices:
+                if len(pin_positions_flat) != 3 * len(pin_indices):
+                    raise RuntimeError(
+                        f"Pin payload mismatch: {len(pin_indices)} indices but {len(pin_positions_flat)} position floats"
+                    )
+                pin_idx_buf = _ppf_as_u64(pin_indices, label="pin_indices")
+                pin_pos_buf = _ppf_as_f32(pin_positions_flat, label="pin_positions")
+
+            collider_buf = None
+            exp_static = getattr(state, "expected_static_verts", None)
+            if collider_verts_flat is not None:
+                if exp_static is not None and len(collider_verts_flat) != 3 * int(exp_static):
+                    try:
+                        print(
+                            f"[PPF] Skipping collider mesh update during bake: got {len(collider_verts_flat)//3} verts, "
+                            f"expected {int(exp_static)}"
+                        )
+                    except Exception:
+                        pass
+                else:
+                    collider_buf = _ppf_as_f32(collider_verts_flat, label="collision_vertices")
+
             curr = state.curr
             if curr is None:
                 raise RuntimeError("Missing bake state buffer")
@@ -2261,13 +2479,32 @@ class ANDOSIM_ARTEZBUILD_OT_ppf_bake_cache(bpy.types.Operator):
                     return {"CANCELLED"}
 
                 # Accuracy-first: apply pins/colliders every substep.
-                _ppf_apply_pin_targets(state.sess, pin_indices, pin_positions_flat)
-                _ppf_apply_collision_mesh_vertices(state.sess, collider_verts_flat)
+                if pin_idx_buf is not None and pin_pos_buf is not None:
+                    try:
+                        getattr(state.sess, "set_pin_targets")(pin_idx_buf, pin_pos_buf)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        clear_fn = getattr(state.sess, "clear_pin_targets", None)
+                        if clear_fn is not None:
+                            clear_fn()
+                    except Exception:
+                        pass
 
+                if collider_buf is not None:
+                    try:
+                        getattr(state.sess, "set_collision_mesh_vertices")(collider_buf)
+                    except Exception:
+                        pass
+
+                _ppf_finite_floats(curr, "bake_curr")
                 out = state.sess.step(curr)
                 if len(out) != len(curr):
                     raise RuntimeError(f"Backend returned {len(out)} floats, expected {len(curr)}")
-                curr = list(out)
+
+                # Keep curr as contiguous float32 for the next substep.
+                curr = _ppf_as_f32(out, label="bake_out")
             state.curr = curr
 
             for obj, start, count, writer, _pc2_path in state.writers:

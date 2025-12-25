@@ -211,13 +211,17 @@ if [[ ! -f "$MANIFEST" ]]; then
 fi
 
 EXT_ID="$(awk -F'=' '/^id[[:space:]]*=/{gsub(/[" \t]/, "", $2); print $2; exit}' "$MANIFEST")"
-EXT_VER="$(awk -F'=' '/^version[[:space:]]*=/{gsub(/[" \t]/, "", $2); print $2; exit}' "$MANIFEST")"
-if [[ -z "$EXT_ID" || -z "$EXT_VER" ]]; then
+EXT_VER_RAW="$(awk -F'=' '/^version[[:space:]]*=/{gsub(/[" \t]/, "", $2); print $2; exit}' "$MANIFEST")"
+if [[ -z "$EXT_ID" || -z "$EXT_VER_RAW" ]]; then
   echo "ERROR: Could not parse id/version from $MANIFEST"
   exit 1
 fi
 
-ZIP_PATH="$DIST_DIR/${EXT_ID}-${EXT_VER}.zip"
+# The extension manifest must be SemVer. It may contain build metadata like 0.0.9+2.
+# For convenience, keep the produced zip name using dotted build number: 0.0.9.2.
+EXT_VER_FOR_ZIP="${EXT_VER_RAW//+/.}"
+
+ZIP_PATH="$DIST_DIR/${EXT_ID}-${EXT_VER_FOR_ZIP}.zip"
 
 EXTENSION_DIR="$EXTENSION_DIR" ZIP_PATH="$ZIP_PATH" python3 - <<'PY'
 import os
